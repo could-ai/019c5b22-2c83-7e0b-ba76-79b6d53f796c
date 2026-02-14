@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import '../models/placement_data.dart';
 import '../services/intel_service.dart';
+import '../models/placement_data.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -12,29 +12,67 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _companyController = TextEditingController();
-  final TextEditingController _skillsController = TextEditingController();
+  final TextEditingController _roleController = TextEditingController();
+  final TextEditingController _jdController = TextEditingController();
   
-  // Simple in-memory history
-  static final List<CompanyIntel> _history = [];
+  List<AnalysisEntry> _history = [];
+  bool _isLoadingHistory = true;
+  String? _corruptedMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() {
+      _isLoadingHistory = true;
+    });
+    try {
+      final history = await AnalysisService.loadHistory();
+      setState(() {
+        _history = history;
+        _isLoadingHistory = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingHistory = false;
+        _corruptedMessage = 'Failed to load history.';
+      });
+    }
+  }
 
   void _analyze() {
     if (_formKey.currentState!.validate()) {
-      final companyName = _companyController.text;
-      final skills = _skillsController.text.split(',').map((e) => e.trim()).toList();
+      final company = _companyController.text.trim();
+      final role = _roleController.text.trim();
+      final jdText = _jdController.text.trim();
 
-      // Generate intel to save to history immediately (simulating persistence)
-      final intel = IntelService.generateIntel(companyName, skills);
+      // Check JD length and show warning
+      if (jdText.length < 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This JD is too short to analyze deeply. Paste full JD for better output.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+
+      final entry = AnalysisService.analyzeJobDescription(jdText, company, role);
+      
+      // Save to history
+      AnalysisService.saveEntry(entry);
+      
+      // Update local history
       setState(() {
-        _history.insert(0, intel);
+        _history.insert(0, entry);
       });
 
       Navigator.pushNamed(
         context,
         '/results',
-        arguments: {
-          'companyName': companyName,
-          'skills': skills,
-        },
+        arguments: entry,
       );
     }
   }
@@ -53,7 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              "Analyze Your Target Company",
+              "Analyze Your Target Job",
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: Colors.deepPurple,
@@ -61,7 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              "Enter the company name and your skills to get tailored interview rounds and insights.",
+              "Paste the job description to get tailored interview prep, rounds, and insights.",
               style: TextStyle(color: Colors.grey),
             ),
             const SizedBox(height: 32),
@@ -70,25 +108,40 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 children: [
                   TextFormField(
+                    controller: _jdController,
+                    maxLines: 8,
+                    decoration: InputDecoration(
+                      labelText: "Job Description (JD)",
+                      hintText: "Paste the full job description here...",
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      alignLabelWithHint: true,
+                    ),
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Please enter the job description';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  TextFormField(
                     controller: _companyController,
                     decoration: InputDecoration(
-                      labelText: "Target Company Name",
+                      labelText: "Company Name (Optional)",
                       hintText: "e.g. Amazon, Infosys, Cred",
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                       prefixIcon: const Icon(Icons.business),
                     ),
-                    validator: (value) => value == null || value.isEmpty ? 'Please enter a company name' : null,
                   ),
                   const SizedBox(height: 20),
                   TextFormField(
-                    controller: _skillsController,
+                    controller: _roleController,
                     decoration: InputDecoration(
-                      labelText: "Your Key Skills (comma separated)",
-                      hintText: "e.g. Java, DSA, React, System Design",
+                      labelText: "Role/Position (Optional)",
+                      hintText: "e.g. Software Engineer, Frontend Developer",
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      prefixIcon: const Icon(Icons.code),
+                      prefixIcon: const Icon(Icons.work),
                     ),
-                    validator: (value) => value == null || value.isEmpty ? 'Please enter at least one skill' : null,
                   ),
                   const SizedBox(height: 32),
                   SizedBox(
@@ -101,14 +154,24 @@ class _HomeScreenState extends State<HomeScreen> {
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
-                      child: const Text("Generate Intel & Rounds", style: TextStyle(fontSize: 16)),
+                      child: const Text("Generate Analysis", style: TextStyle(fontSize: 16)),
                     ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 48),
-            if (_history.isNotEmpty) ...[
+            if (_isLoadingHistory)
+              const Center(child: CircularProgressIndicator())
+            else if (_corruptedMessage != null)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  _corruptedMessage!,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              )
+            else if (_history.isNotEmpty) ...[
               const Divider(),
               const SizedBox(height: 16),
               Text(
@@ -129,20 +192,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: ListTile(
                       leading: CircleAvatar(
                         backgroundColor: Colors.deepPurple.shade100,
-                        child: Text(item.name[0].toUpperCase()),
+                        child: Text((item.company.isNotEmpty ? item.company[0] : 'J').toUpperCase()),
                       ),
-                      title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text("${item.size} • ${item.rounds.length} Rounds"),
+                      title: Text(item.company.isNotEmpty ? item.company : 'Job Analysis'),
+                      subtitle: Text('${item.extractedSkills.allSkills.length} skills • Score: ${item.finalScore.toStringAsFixed(1)}'),
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                       onTap: () {
-                        // Re-navigate to results with saved data
-                         Navigator.pushNamed(
+                        Navigator.pushNamed(
                           context,
                           '/results',
-                          arguments: {
-                            'companyName': item.name,
-                            'skills': ['(From History)'], // Simplified for history tap
-                          },
+                          arguments: item,
                         );
                       },
                     ),
